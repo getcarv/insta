@@ -78,6 +78,13 @@ pub fn serialize_content(
             config.new_line = "\n".to_string();
             config.indentor = "  ".to_string();
             config.struct_names = true;
+            if let Ok(Ok(floating_point_precision)) =
+                std::env::var("INSTA_RON_FLOATING_POINT_PRECISION")
+                    .as_deref()
+                    .map(str::parse::<usize>)
+            {
+                config.floating_point_precision = Some(floating_point_precision);
+            }
             let mut serializer = dep_ron::ser::Serializer::with_options(
                 &mut buf,
                 Some(config),
