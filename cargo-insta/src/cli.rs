@@ -8,8 +8,7 @@ use std::{io, process};
 use console::{set_colors_enabled, style, Key, Term};
 use insta::Snapshot;
 use insta::_cargo_insta_support::{
-    is_ci, print_snapshot, print_snapshot_diff, SnapshotUpdate, TestRunner, ToolConfig,
-    UnreferencedSnapshots,
+    is_ci, SnapshotPrinter, SnapshotUpdate, TestRunner, ToolConfig, UnreferencedSnapshots,
 };
 use serde::Serialize;
 use structopt::clap::AppSettings;
@@ -32,16 +31,19 @@ use crate::walk::{find_snapshots, make_deletion_walker, make_snapshot_walker, Fi
     global_setting = AppSettings::DontCollapseArgsInUsage
 )]
 pub struct Opts {
-    /// Coloring: auto, always, never
-    #[structopt(long, global = true, value_name = "WHEN")]
-    pub color: Option<String>,
+    /// Coloring
+    #[structopt(long, global = true, value_name = "WHEN", default_value="auto", possible_values=&["auto", "always", "never"])]
+    pub color: String,
 
     #[structopt(subcommand)]
     pub command: Command,
 }
 
 #[derive(StructOpt, Debug)]
-#[structopt(bin_name = "cargo insta")]
+#[structopt(
+    bin_name = "cargo insta",
+    after_help = "For the online documentation of the latest version, see https://insta.rs/docs/cli/."
+)]
 pub enum Command {
     /// Interactively review snapshots
     #[structopt(name = "review", alias = "verify")]
@@ -131,6 +133,9 @@ pub struct TestCommand {
     /// Package to run tests for
     #[structopt(short = "p", long)]
     pub package: Option<String>,
+    /// Exclude packages from the test
+    #[structopt(long, value_name = "SPEC")]
+    pub exclude: Option<String>,
     /// Disable force-passing of snapshot tests
     #[structopt(long)]
     pub no_force_pass: bool,
@@ -164,6 +169,9 @@ pub struct TestCommand {
     /// Accept all new (previously unseen).
     #[structopt(long)]
     pub accept_unseen: bool,
+    /// Instructs the test command to just assert.
+    #[structopt(long)]
+    pub check: bool,
     /// Do not reject pending snapshots before run.
     #[structopt(long)]
     pub keep_pending: bool,
@@ -171,8 +179,8 @@ pub struct TestCommand {
     #[structopt(long)]
     pub force_update_snapshots: bool,
     /// Controls what happens with unreferenced snapshots.
-    #[structopt(long)]
-    pub unreferenced: Option<String>,
+    #[structopt(long, default_value="ignore", possible_values=&["ignore", "warn", "reject", "delete", "auto"])]
+    pub unreferenced: String,
     /// Delete unreferenced snapshots after the test run.
     #[structopt(long, hidden = true)]
     pub delete_unreferenced_snapshots: bool,
@@ -183,8 +191,8 @@ pub struct TestCommand {
     #[structopt(short = "Q", long)]
     pub no_quiet: bool,
     /// Picks the test runner.
-    #[structopt(long)]
-    pub test_runner: Option<String>,
+    #[structopt(long, default_value="auto", possible_values=&["auto", "cargo-test", "nextest"])]
+    pub test_runner: String,
     /// Options passed to cargo test
     // Sets raw to true so that `--` is required
     #[structopt(name = "CARGO_TEST_ARGS", raw(true))]
@@ -222,6 +230,7 @@ fn query_snapshot(
     n: usize,
     snapshot_file: Option<&Path>,
     show_info: &mut bool,
+    show_diff: &mut bool,
 ) -> Result<Operation, Box<dyn Error>> {
     loop {
         term.clear_screen()?;
@@ -240,7 +249,12 @@ fn query_snapshot(
             pkg_version,
         );
 
-        print_snapshot_diff(workspace_root, new, old, snapshot_file, line, *show_info);
+        let mut printer = SnapshotPrinter::new(workspace_root, old, new);
+        printer.set_snapshot_file(snapshot_file);
+        printer.set_line(line);
+        printer.set_show_info(*show_info);
+        printer.set_show_diff(*show_diff);
+        printer.print();
 
         println!();
         println!(
@@ -264,6 +278,12 @@ fn query_snapshot(
             if *show_info { "hide" } else { "show" },
             style("toggles extended snapshot info").dim()
         );
+        println!(
+            "  {} {} diff  {}",
+            style("d").cyan().bold(),
+            if *show_diff { "hide" } else { "show" },
+            style("toggle snapshot diff").dim()
+        );
 
         loop {
             match term.read_key()? {
@@ -272,6 +292,10 @@ fn query_snapshot(
                 Key::Char('s') | Key::Char(' ') => return Ok(Operation::Skip),
                 Key::Char('i') => {
                     *show_info = !*show_info;
+                    break;
+                }
+                Key::Char('d') => {
+                    *show_diff = !*show_diff;
                     break;
                 }
                 _ => {}
@@ -415,6 +439,7 @@ fn process_snapshots(
     let mut skipped = vec![];
     let mut num = 0;
     let mut show_info = true;
+    let mut show_diff = true;
 
     for (snapshot_container, package) in snapshot_containers.iter_mut() {
         let target_file = snapshot_container.target_file().to_path_buf();
@@ -447,6 +472,7 @@ fn process_snapshots(
                     snapshot_count,
                     snapshot_file.as_ref().map(|x| x.as_path()),
                     &mut show_info,
+                    &mut show_diff,
                 )?,
             };
             match op {
@@ -498,7 +524,12 @@ fn process_snapshots(
 fn test_run(mut cmd: TestCommand, color: &str) -> Result<(), Box<dyn Error>> {
     let loc = handle_target_args(&cmd.target_args)?;
     match loc.tool_config.snapshot_update() {
-        SnapshotUpdate::Auto | SnapshotUpdate::New | SnapshotUpdate::No => {}
+        SnapshotUpdate::Auto => {
+            if is_ci() {
+                cmd.check = true;
+            }
+        }
+        SnapshotUpdate::New | SnapshotUpdate::No => {}
         SnapshotUpdate::Always => {
             if !cmd.accept && !cmd.accept_unseen && !cmd.review {
                 cmd.review = false;
@@ -514,6 +545,12 @@ fn test_run(mut cmd: TestCommand, color: &str) -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // --check always implies --no-force-pass as otherwise this command does not
+    // make a lot of sense.
+    if cmd.check {
+        cmd.no_force_pass = true
+    }
+
     // the tool config can also indicate that --accept-unseen should be picked
     // automatically unless instructed otherwise.
     if loc.tool_config.auto_accept_unseen() && !cmd.accept && !cmd.review {
@@ -525,22 +562,18 @@ fn test_run(mut cmd: TestCommand, color: &str) -> Result<(), Box<dyn Error>> {
 
     // Legacy command
     if cmd.delete_unreferenced_snapshots {
-        cmd.unreferenced = Some("delete".into());
+        cmd.unreferenced = "delete".into();
     }
 
-    let test_runner = match cmd.test_runner {
-        Some(ref test_runner) => test_runner
-            .parse()
-            .map_err(|_| err_msg("invalid test runner preference"))?,
-        None => loc.tool_config.test_runner(),
-    };
+    let test_runner = cmd
+        .test_runner
+        .parse()
+        .map_err(|_| err_msg("invalid test runner preference"))?;
 
-    let unreferenced = match cmd.unreferenced {
-        Some(ref value) => value
-            .parse()
-            .map_err(|_| err_msg("invalid value for --unreferenced"))?,
-        None => loc.tool_config.test_unreferenced(),
-    };
+    let unreferenced = cmd
+        .unreferenced
+        .parse()
+        .map_err(|_| err_msg("invalid value for --unreferenced"))?;
 
     let (mut proc, snapshot_ref_file, prevents_doc_run) =
         prepare_test_runner(test_runner, unreferenced, &cmd, color, &[], None)?;
@@ -786,6 +819,10 @@ fn prepare_test_runner<'snapshot_ref>(
         proc.arg("--package");
         proc.arg(pkg);
     }
+    if let Some(ref spec) = cmd.exclude {
+        proc.arg("--exclude");
+        proc.arg(spec);
+    }
     if let Some(ref manifest_path) = cmd.target_args.manifest_path {
         proc.arg("--manifest-path");
         proc.arg(manifest_path);
@@ -798,7 +835,11 @@ fn prepare_test_runner<'snapshot_ref>(
     }
     proc.env(
         "INSTA_UPDATE",
-        if cmd.accept_unseen { "unseen" } else { "new" },
+        match (cmd.check, cmd.accept_unseen) {
+            (true, _) => "no",
+            (_, true) => "unseen",
+            (_, false) => "new",
+        },
     );
     if cmd.force_update_snapshots {
         proc.env("INSTA_FORCE_UPDATE_SNAPSHOTS", "1");
@@ -860,7 +901,11 @@ fn prepare_test_runner<'snapshot_ref>(
 fn show_cmd(cmd: ShowCommand) -> Result<(), Box<dyn Error>> {
     let loc = handle_target_args(&cmd.target_args)?;
     let snapshot = Snapshot::from_file(&cmd.path)?;
-    print_snapshot(&loc.workspace_root, &snapshot, Some(&cmd.path), None, true);
+    let mut printer = SnapshotPrinter::new(&loc.workspace_root, None, &snapshot);
+    printer.set_snapshot_file(Some(&cmd.path));
+    printer.set_show_info(true);
+    printer.set_show_diff(false);
+    printer.print();
     Ok(())
 }
 
@@ -988,8 +1033,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     let opts = Opts::from_iter(args);
 
-    let color = opts.color.as_ref().map(|x| x.as_str()).unwrap_or("auto");
-    handle_color(color)?;
+    handle_color(&opts.color)?;
     match opts.command {
         Command::Review(ref cmd) | Command::Accept(ref cmd) | Command::Reject(ref cmd) => {
             process_snapshots(
@@ -1004,7 +1048,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 },
             )
         }
-        Command::Test(cmd) => test_run(cmd, color),
+        Command::Test(cmd) => test_run(cmd, &opts.color),
         Command::Show(cmd) => show_cmd(cmd),
         Command::PendingSnapshots(cmd) => pending_snapshots_cmd(cmd),
     }

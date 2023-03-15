@@ -2,6 +2,31 @@
 
 All notable changes to insta and cargo-insta are documented here.
 
+## 1.29.0
+
+- Fixed a rednering bug with snapshot display (lines were not
+  rendered to the terminal width).
+- Added `--exclude` option to `cargo insta test`. (#360)
+
+## 1.28.0
+
+- Added `allow_duplicates!` to enable multiple assertions for a
+  single snapshot. (#346)
+- Ensure that expressions formatted with `rustfmt` use unix newlines.
+- Added a way to disable diffing in review. (#348)
+- Added three argument version of `glob!` to set a different base
+  path. (#347)
+- Added `rounded_redaction` to truncate floating point values. (#350)
+
+## 1.27.0
+
+- Fix an issue where the inline snapshot patcher could panic in
+  certain situations. (#341)
+- `cargo insta test` now correctly detects CI environments like
+  `cargo test` does.  In that case it will by fail rather than
+  create snapshot update files. (#345)
+- Added `cargo insta test --check` to force check runs. (#345)
+
 ## 1.26.0
 
 - Make canonicalization in `glob!` optional to better support WASI.
