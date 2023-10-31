@@ -10,9 +10,9 @@ use crate::cargo::Package;
 use crate::container::{SnapshotContainer, SnapshotContainerKind};
 
 #[derive(Debug, Copy, Clone)]
-pub struct FindFlags {
-    pub include_ignored: bool,
-    pub include_hidden: bool,
+pub(crate) struct FindFlags {
+    pub(crate) include_ignored: bool,
+    pub(crate) include_hidden: bool,
 }
 
 fn is_hidden(entry: &DirEntry) -> bool {
@@ -24,12 +24,12 @@ fn is_hidden(entry: &DirEntry) -> bool {
 }
 
 /// Finds all snapshots
-pub fn find_snapshots<'a>(
+pub(crate) fn find_snapshots<'a>(
     root: &Path,
     extensions: &'a [&'a str],
     flags: FindFlags,
 ) -> impl Iterator<Item = Result<SnapshotContainer, Box<dyn Error>>> + 'a {
-    make_snapshot_walker(&root, extensions, flags)
+    make_snapshot_walker(root, extensions, flags)
         .filter_map(|e| e.ok())
         .filter_map(move |e| {
             let fname = e.file_name().to_string_lossy();
@@ -57,7 +57,7 @@ pub fn find_snapshots<'a>(
 }
 
 /// Creates a walker for snapshots.
-pub fn make_snapshot_walker(path: &Path, extensions: &[&str], flags: FindFlags) -> Walk {
+pub(crate) fn make_snapshot_walker(path: &Path, extensions: &[&str], flags: FindFlags) -> Walk {
     let mut builder = WalkBuilder::new(path);
     builder.standard_filters(!flags.include_ignored);
     if flags.include_hidden {
@@ -84,22 +84,22 @@ pub fn make_snapshot_walker(path: &Path, extensions: &[&str], flags: FindFlags) 
 /// A walker that is used by the snapshot deletion code.
 ///
 /// This really should be using the same logic as the main snapshot walker but today is is not.
-pub fn make_deletion_walker(
+pub(crate) fn make_deletion_walker(
     workspace_root: &Path,
     known_packages: Option<&[Package]>,
     selected_package: Option<&str>,
 ) -> Walk {
-    let roots: HashSet<_> = if let Some(ref packages) = known_packages {
+    let roots: HashSet<_> = if let Some(packages) = known_packages {
         packages
             .iter()
             .filter_map(|x| {
                 // filter out packages we did not ask for.
                 if let Some(only_package) = selected_package {
-                    if x.name() != only_package {
+                    if x.name != only_package {
                         return None;
                     }
                 }
-                x.manifest_path().parent().unwrap().canonicalize().ok()
+                x.manifest_path.parent().unwrap().canonicalize().ok()
             })
             .collect()
     } else {
@@ -120,7 +120,7 @@ pub fn make_deletion_walker(
 
             // We always want to skip target even if it was not excluded by
             // ignore files.
-            if entry.path().file_name() == Some(&OsStr::new("target"))
+            if entry.path().file_name() == Some(OsStr::new("target"))
                 && roots.contains(canonicalized.parent().unwrap())
             {
                 return false;

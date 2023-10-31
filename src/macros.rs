@@ -378,6 +378,8 @@ macro_rules! _prepare_snapshot_for_redaction {
 /// simple values that do not implement the `Serialize` trait but does not
 /// permit redactions.
 ///
+/// Debug is called with `"{:#?}"`, which means this uses pretty-print.
+///
 /// The snapshot name is optional.
 #[macro_export]
 macro_rules! assert_debug_snapshot {
@@ -436,14 +438,20 @@ macro_rules! assert_display_snapshot {
 macro_rules! assert_snapshot {
     ($value:expr, @$snapshot:literal) => {
         $crate::assert_snapshot!(
-            $crate::_macro_support::ReferenceValue::Inline($snapshot),
+            $crate::_macro_support::ReferenceValue::Inline(
+                #[allow(clippy::needless_raw_string_hashes)]
+                $snapshot,
+            ),
             $value,
             stringify!($value)
         )
     };
     ($value:expr, $debug_expr:expr, @$snapshot:literal) => {
         $crate::assert_snapshot!(
-            $crate::_macro_support::ReferenceValue::Inline($snapshot),
+            $crate::_macro_support::ReferenceValue::Inline(
+                #[allow(clippy::needless_raw_string_hashes)]
+                $snapshot,
+            ),
             $value,
             $debug_expr
         )

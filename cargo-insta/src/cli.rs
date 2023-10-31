@@ -1,6 +1,7 @@
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::HashSet;
 use std::error::Error;
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 use std::{io, process};
@@ -15,7 +16,7 @@ use structopt::clap::AppSettings;
 use structopt::StructOpt;
 use uuid::Uuid;
 
-use crate::cargo::{find_packages, get_cargo, get_package_metadata, Package};
+use crate::cargo::{find_snapshot_roots, get_metadata, Metadata, Package};
 use crate::container::{Operation, SnapshotContainer};
 use crate::utils::{err_msg, QuietExit};
 use crate::walk::{find_snapshots, make_deletion_walker, make_snapshot_walker, FindFlags};
@@ -30,13 +31,13 @@ use crate::walk::{find_snapshots, make_deletion_walker, make_snapshot_walker, Fi
     global_setting = AppSettings::DeriveDisplayOrder,
     global_setting = AppSettings::DontCollapseArgsInUsage
 )]
-pub struct Opts {
+struct Opts {
     /// Coloring
     #[structopt(long, global = true, value_name = "WHEN", possible_values=&["auto", "always", "never"])]
-    pub color: Option<String>,
+    color: Option<String>,
 
     #[structopt(subcommand)]
-    pub command: Command,
+    command: Command,
 }
 
 #[derive(StructOpt, Debug)]
@@ -44,7 +45,8 @@ pub struct Opts {
     bin_name = "cargo insta",
     after_help = "For the online documentation of the latest version, see https://insta.rs/docs/cli/."
 )]
-pub enum Command {
+#[allow(clippy::large_enum_variant)]
+enum Command {
     /// Interactively review snapshots
     #[structopt(name = "review", alias = "verify")]
     Review(ProcessCommand),
@@ -67,155 +69,161 @@ pub enum Command {
 
 #[derive(StructOpt, Debug, Clone)]
 #[structopt(rename_all = "kebab-case")]
-pub struct TargetArgs {
+struct TargetArgs {
     /// Path to Cargo.toml
     #[structopt(long, value_name = "PATH", parse(from_os_str))]
-    pub manifest_path: Option<PathBuf>,
+    manifest_path: Option<PathBuf>,
     /// Explicit path to the workspace root
     #[structopt(long, value_name = "PATH", parse(from_os_str))]
-    pub workspace_root: Option<PathBuf>,
+    workspace_root: Option<PathBuf>,
     /// Sets the extensions to consider.  Defaults to `.snap`
     #[structopt(short = "e", long, value_name = "EXTENSIONS", multiple = true)]
-    pub extensions: Vec<String>,
+    extensions: Vec<String>,
     /// Work on all packages in the workspace
     #[structopt(long)]
-    pub workspace: bool,
+    workspace: bool,
     /// Alias for --workspace (deprecated)
     #[structopt(long)]
-    pub all: bool,
+    all: bool,
     /// Also walk into ignored paths.
     #[structopt(long, alias = "no-ignore")]
-    pub include_ignored: bool,
+    include_ignored: bool,
     /// Also include hidden paths.
     #[structopt(long)]
-    pub include_hidden: bool,
+    include_hidden: bool,
 }
 
 #[derive(StructOpt, Debug)]
 #[structopt(rename_all = "kebab-case")]
-pub struct ProcessCommand {
+struct ProcessCommand {
     #[structopt(flatten)]
-    pub target_args: TargetArgs,
+    target_args: TargetArgs,
     /// Limits the operation to one or more snapshots.
     #[structopt(long = "snapshot")]
-    pub snapshot_filter: Option<Vec<String>>,
+    snapshot_filter: Option<Vec<String>>,
     /// Do not print to stdout.
     #[structopt(short = "q", long)]
-    pub quiet: bool,
+    quiet: bool,
 }
 
 #[derive(StructOpt, Debug)]
 #[structopt(rename_all = "kebab-case")]
-pub struct TestCommand {
+struct TestCommand {
     #[structopt(flatten)]
-    pub target_args: TargetArgs,
+    target_args: TargetArgs,
     /// Test only this package's library unit tests
     #[structopt(long)]
-    pub lib: bool,
+    lib: bool,
     /// Test only the specified binary
     #[structopt(long)]
-    pub bin: Option<String>,
+    bin: Option<String>,
     /// Test all binaries
     #[structopt(long)]
-    pub bins: bool,
+    bins: bool,
     /// Test only the specified example
     #[structopt(long)]
-    pub example: Option<String>,
+    example: Option<String>,
     /// Test all examples
     #[structopt(long)]
-    pub examples: bool,
+    examples: bool,
     /// Test only the specified test target
     #[structopt(long)]
-    pub test: Option<String>,
+    test: Option<String>,
     /// Test all tests
     #[structopt(long)]
-    pub tests: bool,
+    tests: bool,
     /// Package to run tests for
     #[structopt(short = "p", long)]
-    pub package: Option<String>,
+    package: Option<String>,
     /// Exclude packages from the test
     #[structopt(long, value_name = "SPEC")]
-    pub exclude: Option<String>,
+    exclude: Option<String>,
     /// Disable force-passing of snapshot tests
     #[structopt(long)]
-    pub no_force_pass: bool,
+    no_force_pass: bool,
     /// Prevent running all tests regardless of failure
     #[structopt(long)]
-    pub fail_fast: bool,
+    fail_fast: bool,
     /// Space-separated list of features to activate
     #[structopt(long, value_name = "FEATURES")]
-    pub features: Option<String>,
+    features: Option<String>,
     /// Number of parallel jobs, defaults to # of CPUs
     #[structopt(short = "j", long)]
-    pub jobs: Option<usize>,
+    jobs: Option<usize>,
     /// Build artifacts in release mode, with optimizations
     #[structopt(long)]
-    pub release: bool,
+    release: bool,
+    /// Build artifacts with the specified profile
+    #[structopt(long)]
+    profile: Option<String>,
+    /// Test all targets (does not include doctests)
+    #[structopt(long)]
+    all_targets: bool,
     /// Activate all available features
     #[structopt(long)]
-    pub all_features: bool,
+    all_features: bool,
     /// Do not activate the `default` feature
     #[structopt(long)]
-    pub no_default_features: bool,
+    no_default_features: bool,
     /// Build for the target triple
     #[structopt(long)]
-    pub target: Option<String>,
+    target: Option<String>,
     /// Follow up with review.
     #[structopt(long)]
-    pub review: bool,
+    review: bool,
     /// Accept all snapshots after test.
     #[structopt(long, conflicts_with = "review")]
-    pub accept: bool,
+    accept: bool,
     /// Accept all new (previously unseen).
     #[structopt(long)]
-    pub accept_unseen: bool,
+    accept_unseen: bool,
     /// Instructs the test command to just assert.
     #[structopt(long)]
-    pub check: bool,
+    check: bool,
     /// Do not reject pending snapshots before run.
     #[structopt(long)]
-    pub keep_pending: bool,
+    keep_pending: bool,
     /// Update all snapshots even if they are still matching.
     #[structopt(long)]
-    pub force_update_snapshots: bool,
+    force_update_snapshots: bool,
     /// Controls what happens with unreferenced snapshots.
     #[structopt(long, default_value="ignore", possible_values=&["ignore", "warn", "reject", "delete", "auto"])]
-    pub unreferenced: String,
+    unreferenced: String,
     /// Delete unreferenced snapshots after the test run.
     #[structopt(long, hidden = true)]
-    pub delete_unreferenced_snapshots: bool,
+    delete_unreferenced_snapshots: bool,
     /// Filters to apply to the insta glob feature.
     #[structopt(long)]
-    pub glob_filter: Vec<String>,
+    glob_filter: Vec<String>,
     /// Do not pass the quiet flag (`-q`) to tests.
     #[structopt(short = "Q", long)]
-    pub no_quiet: bool,
+    no_quiet: bool,
     /// Picks the test runner.
     #[structopt(long, default_value="auto", possible_values=&["auto", "cargo-test", "nextest"])]
-    pub test_runner: String,
+    test_runner: String,
     /// Options passed to cargo test
     // Sets raw to true so that `--` is required
     #[structopt(name = "CARGO_TEST_ARGS", raw(true))]
-    pub cargo_options: Vec<String>,
+    cargo_options: Vec<String>,
 }
 
 #[derive(StructOpt, Debug)]
 #[structopt(rename_all = "kebab-case")]
-pub struct PendingSnapshotsCommand {
+struct PendingSnapshotsCommand {
     #[structopt(flatten)]
-    pub target_args: TargetArgs,
+    target_args: TargetArgs,
     /// Changes the output from human readable to JSON.
     #[structopt(long)]
-    pub as_json: bool,
+    as_json: bool,
 }
 
 #[derive(StructOpt, Debug)]
 #[structopt(rename_all = "kebab-case")]
-pub struct ShowCommand {
+struct ShowCommand {
     #[structopt(flatten)]
-    pub target_args: TargetArgs,
+    target_args: TargetArgs,
     /// The path to the snapshot file.
-    pub path: PathBuf,
+    path: PathBuf,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -234,10 +242,10 @@ fn query_snapshot(
 ) -> Result<Operation, Box<dyn Error>> {
     loop {
         term.clear_screen()?;
-        let (pkg_name, pkg_version) = if let Some(pkg) = pkg {
-            (pkg.name(), pkg.version())
+        let (pkg_name, pkg_version): (_, &dyn Display) = if let Some(pkg) = pkg {
+            (pkg.name.as_str(), &pkg.version)
         } else {
-            ("unknown package", "unknown version")
+            ("unknown package", &"unknown version")
         };
 
         println!(
@@ -262,11 +270,21 @@ fn query_snapshot(
             style("a").green().bold(),
             style("keep the new snapshot").dim()
         );
-        println!(
-            "  {} reject     {}",
-            style("r").red().bold(),
-            style("keep the old snapshot").dim()
-        );
+
+        if old.is_some() {
+            println!(
+                "  {} reject     {}",
+                style("r").red().bold(),
+                style("retain the old snapshot").dim()
+            );
+        } else {
+            println!(
+                "  {} reject     {}",
+                style("r").red().bold(),
+                style("reject the new snapshot").dim()
+            );
+        }
+
         println!(
             "  {} skip       {}",
             style("s").yellow().bold(),
@@ -348,29 +366,28 @@ fn handle_target_args(target_args: &TargetArgs) -> Result<LocationInfo<'_>, Box<
     // does we instead treat it as manifest path.  If both are provided we fail with an error
     // as this would indicate an error.
     let (workspace_root, manifest_path) = match (
-        target_args.workspace_root.as_ref(),
-        target_args.manifest_path.as_ref(),
+        target_args.workspace_root.as_deref(),
+        target_args.manifest_path.as_deref(),
     ) {
         (Some(_), Some(_)) => {
-            return Err(err_msg(format!(
-                "both manifest-path and workspace-root provided."
-            )))
+            return Err(err_msg(
+                "both manifest-path and workspace-root provided.".to_string(),
+            ))
         }
         (None, Some(manifest)) => (None, Some(Cow::Borrowed(manifest))),
         (Some(root), manifest_path) => {
-            let mut assumed_manifest = root.clone();
-            assumed_manifest.push("Cargo.toml");
-            if assumed_manifest.metadata().map_or(false, |x| x.is_file()) {
+            let assumed_manifest = root.join("Cargo.toml");
+            if assumed_manifest.is_file() {
                 (None, Some(Cow::Owned(assumed_manifest)))
             } else {
-                (Some(root.as_path()), manifest_path.map(Cow::Borrowed))
+                (Some(root), manifest_path.map(Cow::Borrowed))
             }
         }
         (None, None) => (None, None),
     };
 
     if let Some(workspace_root) = workspace_root {
-        let tool_config = ToolConfig::from_workspace(&workspace_root)?;
+        let tool_config = ToolConfig::from_workspace(workspace_root)?;
         Ok(LocationInfo {
             workspace_root: workspace_root.to_owned(),
             packages: None,
@@ -379,11 +396,18 @@ fn handle_target_args(target_args: &TargetArgs) -> Result<LocationInfo<'_>, Box<
             tool_config,
         })
     } else {
-        let metadata = get_package_metadata(manifest_path.as_ref().map(|x| x.as_path()))?;
-        let packages = find_packages(&metadata, target_args.all || target_args.workspace)?;
-        let tool_config = ToolConfig::from_workspace(metadata.workspace_root())?;
+        let Metadata {
+            packages,
+            workspace_root,
+            ..
+        } = get_metadata(
+            manifest_path.as_deref(),
+            target_args.all || target_args.workspace,
+        )?;
+        let workspace_root = workspace_root.as_std_path().to_path_buf();
+        let tool_config = ToolConfig::from_workspace(&workspace_root)?;
         Ok(LocationInfo {
-            workspace_root: metadata.workspace_root().to_path_buf(),
+            workspace_root,
             packages: Some(packages),
             exts,
             find_flags: get_find_flags(&tool_config, target_args),
@@ -392,6 +416,7 @@ fn handle_target_args(target_args: &TargetArgs) -> Result<LocationInfo<'_>, Box<
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn load_snapshot_containers<'a>(
     loc: &'a LocationInfo,
 ) -> Result<
@@ -405,7 +430,7 @@ fn load_snapshot_containers<'a>(
     let mut snapshot_containers = vec![];
     if let Some(ref packages) = loc.packages {
         for package in packages.iter() {
-            for root in package.find_snapshot_roots() {
+            for root in find_snapshot_roots(package) {
                 roots.insert(root.clone());
                 for snapshot_container in find_snapshots(&root, &loc.exts, loc.find_flags) {
                     snapshot_containers.push((snapshot_container?, Some(package)));
@@ -418,6 +443,7 @@ fn load_snapshot_containers<'a>(
             snapshot_containers.push((snapshot_container?, None));
         }
     }
+    snapshot_containers.sort_by(|a, b| a.0.snapshot_sort_key().cmp(&b.0.snapshot_sort_key()));
     Ok((snapshot_containers, roots))
 }
 
@@ -429,7 +455,7 @@ fn process_snapshots(
 ) -> Result<(), Box<dyn Error>> {
     let term = Term::stdout();
 
-    let (mut snapshot_containers, roots) = load_snapshot_containers(&loc)?;
+    let (mut snapshot_containers, roots) = load_snapshot_containers(loc)?;
 
     let snapshot_count = snapshot_containers.iter().map(|x| x.0.len()).sum();
 
@@ -455,7 +481,7 @@ fn process_snapshots(
         let snapshot_file = snapshot_container.snapshot_file().map(|x| x.to_path_buf());
         for snapshot_ref in snapshot_container.iter_snapshots() {
             // if a filter is provided, check if the snapshot reference is included
-            if let Some(ref filter) = snapshot_filter {
+            if let Some(filter) = snapshot_filter {
                 let key = if let Some(line) = snapshot_ref.line {
                     format!("{}:{}", target_file.display(), line)
                 } else {
@@ -479,7 +505,7 @@ fn process_snapshots(
                     snapshot_ref.line,
                     num,
                     snapshot_count,
-                    snapshot_file.as_ref().map(|x| x.as_path()),
+                    snapshot_file.as_deref(),
                     &mut show_info,
                     &mut show_diff,
                 )?,
@@ -607,24 +633,17 @@ fn test_run(mut cmd: TestCommand, color: &str) -> Result<(), Box<dyn Error>> {
         success = success && proc.status()?.success();
     }
 
-    if !success {
-        if cmd.review {
-            eprintln!(
-                "{} non snapshot tests failed, skipping review",
-                style("warning:").bold().yellow()
-            );
-        } else if cmd.accept {
-            eprintln!(
-                "{} non snapshot tests failed, not accepted changes",
-                style("warning:").bold().yellow()
-            );
-        }
+    if !success && cmd.review {
+        eprintln!(
+            "{} non snapshot tests failed, skipping review",
+            style("warning:").bold().yellow()
+        );
         return Err(QuietExit(1).into());
     }
 
     // handle unreferenced snapshots if we were instructed to do so
     if let Some(ref path) = snapshot_ref_file {
-        handle_unreferenced_snapshots(path, &loc, unreferenced, cmd.package.as_deref())?;
+        handle_unreferenced_snapshots(path.borrow(), &loc, unreferenced, cmd.package.as_deref())?;
     }
 
     if cmd.review || cmd.accept {
@@ -658,11 +677,15 @@ fn test_run(mut cmd: TestCommand, color: &str) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    Ok(())
+    if !success {
+        Err(QuietExit(1).into())
+    } else {
+        Ok(())
+    }
 }
 
 fn handle_unreferenced_snapshots(
-    path: &Cow<Path>,
+    path: &Path,
     loc: &LocationInfo<'_>,
     unreferenced: UnreferencedSnapshots,
     package: Option<&str>,
@@ -744,7 +767,7 @@ fn handle_unreferenced_snapshots(
         }
     }
 
-    fs::remove_file(&path).ok();
+    fs::remove_file(path).ok();
 
     if !encountered_any {
         eprintln!("{}: no unreferenced snapshots found", style("info").bold());
@@ -755,6 +778,7 @@ fn handle_unreferenced_snapshots(
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 fn prepare_test_runner<'snapshot_ref>(
     test_runner: TestRunner,
     unreferenced: UnreferencedSnapshots,
@@ -763,14 +787,18 @@ fn prepare_test_runner<'snapshot_ref>(
     extra_args: &[&str],
     snapshot_ref_file: Option<&'snapshot_ref Path>,
 ) -> Result<(process::Command, Option<Cow<'snapshot_ref, Path>>, bool), Box<dyn Error>> {
+    let cargo = env::var_os("CARGO");
+    let cargo = cargo
+        .as_deref()
+        .unwrap_or_else(|| std::ffi::OsStr::new("cargo"));
     let mut proc = match test_runner {
         TestRunner::CargoTest | TestRunner::Auto => {
-            let mut proc = process::Command::new(get_cargo());
+            let mut proc = process::Command::new(cargo);
             proc.arg("test");
             proc
         }
         TestRunner::Nextest => {
-            let mut proc = process::Command::new(get_cargo());
+            let mut proc = process::Command::new(cargo);
             proc.arg("nextest");
             proc.arg("run");
             proc
@@ -870,6 +898,13 @@ fn prepare_test_runner<'snapshot_ref>(
     if cmd.release {
         proc.arg("--release");
     }
+    if let Some(ref profile) = cmd.profile {
+        proc.arg("--profile");
+        proc.arg(profile);
+    }
+    if cmd.all_targets {
+        proc.arg("--all-targets");
+    }
     if let Some(n) = cmd.jobs {
         // use -j instead of --jobs since both nextest and cargo test use it
         proc.arg("-j");
@@ -892,18 +927,23 @@ fn prepare_test_runner<'snapshot_ref>(
     proc.arg("--color");
     proc.arg(color);
     proc.args(extra_args);
-    let mut dashdash = false;
+    // Items after this are passed to the test runner
+    proc.arg("--");
     if !cmd.no_quiet && matches!(test_runner, TestRunner::CargoTest) {
-        proc.arg("--");
         proc.arg("-q");
-        dashdash = true;
     }
     if !cmd.cargo_options.is_empty() {
-        if !dashdash {
-            proc.arg("--");
-        }
         proc.args(&cmd.cargo_options);
     }
+    // Currently libtest uses a different approach to color, so we need to pass
+    // it again to get output from the test runner as well as cargo. See
+    // https://github.com/rust-lang/cargo/issues/1983 for more
+    match test_runner {
+        TestRunner::CargoTest | TestRunner::Auto => {
+            proc.arg(format!("--color={}", color));
+        }
+        _ => {}
+    };
     Ok((proc, snapshot_ref_file, prevents_doc_run))
 }
 
@@ -956,12 +996,10 @@ fn pending_snapshots_cmd(cmd: PendingSnapshotsCommand) -> Result<(), Box<dyn Err
                     SnapshotKey::NamedSnapshot { path: &target_file }
                 };
                 println!("{}", serde_json::to_string(&info).unwrap());
+            } else if is_inline {
+                println!("{}:{}", target_file.display(), snapshot_ref.line.unwrap());
             } else {
-                if is_inline {
-                    println!("{}:{}", target_file.display(), snapshot_ref.line.unwrap());
-                } else {
-                    println!("{}", target_file.display());
-                }
+                println!("{}", target_file.display());
             }
         }
     }
@@ -1033,7 +1071,7 @@ fn show_undiscovered_hint(
     );
 }
 
-pub fn run() -> Result<(), Box<dyn Error>> {
+pub(crate) fn run() -> Result<(), Box<dyn Error>> {
     // chop off cargo
     let mut args: Vec<_> = env::args_os().collect();
     if env::var("CARGO").is_ok() && args.get(1).and_then(|x| x.to_str()) == Some("insta") {

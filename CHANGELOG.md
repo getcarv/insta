@@ -2,9 +2,38 @@
 
 All notable changes to insta and cargo-insta are documented here.
 
+## 1.34.0
+
+- Snapshots are now sorted in the UI on review.  (#413)
+- Re-organized repository to move `cargo-insta` into a workspace.  (#410)
+- Fixed handling of `--manifest-path` with regards to virtual workspaces.  (#409)
+
+## 1.33.0
+
+- Added `--all-targets` parameter support to `cargo insta test`.  (#408)
+
+## 1.32.0
+
+- Added `--profile` parameter support to `cargo insta test`.
+
+## 1.31.0
+
+- Fixed a bug that caused `cargo insta test` not to report test failures.
+- Suppress `needless_raw_string_hashes` clippy lint on inline snapshots.  (#390)
+
+## 1.30.0
+
+- Resolved a bug on Windows that caused `input_file` not to be written into the
+  snapshots.  (#386)
+- Snapshots are accepted when running with `--accept` even if a test outside
+  insta fails.  (#358)
+- Mark settings drop guard as `#[must_use]`.
+- Write inline snapshots with atomic rename to avoid some rare races.  (#373)
+- Pass `--color=...` to libtest to propagate color choices in more situations.  (#375)
+
 ## 1.29.0
 
-- Fixed a rednering bug with snapshot display (lines were not
+- Fixed a rendering bug with snapshot display (lines were not
   rendered to the terminal width).
 - Added `--exclude` option to `cargo insta test`. (#360)
 - Inherit `color` option from a `CARGO_TERM_COLOR` environment variable (#361)
