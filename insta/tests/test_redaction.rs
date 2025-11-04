@@ -611,6 +611,40 @@ fn test_deep_wildcard_nested_objects() {
 
 #[cfg(feature = "yaml")]
 #[test]
+fn test_recurse() {
+    #[derive(Serialize)]
+    struct Node {
+        data: f64,
+        nodes: Vec<Node>,
+    }
+
+    let data = Node {
+        data: f64::tan(1.0),
+        nodes: vec![
+            Node {
+                data: f64::tan(2.0),
+                nodes: vec![Node {
+                    data: f64::tan(4.0),
+                    nodes: vec![Node {
+                        data: f64::tan(5.0),
+                        nodes: vec![],
+                    }],
+                }],
+            },
+            Node {
+                data: f64::tan(3.0),
+                nodes: vec![],
+            },
+        ],
+    };
+
+    insta::assert_yaml_snapshot!("recurse", data, {
+        ".**" => insta::rounded_redaction(3),
+    });
+}
+
+#[cfg(feature = "yaml")]
+#[test]
 fn test_named_redacted_with_debug_expr() {
     // This test demonstrates the form with a name, redactions, and debug expression
     // | File, redacted, named, debug expr | `assert_yaml_snapshot!("name", expr, {"." => sorted_redaction()}, "debug_expr")` |

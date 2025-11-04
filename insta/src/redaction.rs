@@ -388,16 +388,20 @@ impl<'a> Selector<'a> {
             let forward_sel = &selector[..idx];
             let backward_sel = &selector[idx + 1..];
 
-            if path.len() <= idx {
+            // Ensure path is long enough to contain both forward and backward segments.
+            // DeepWildcard matches zero or more elements, so we need at least forward + backward length
+            if path.len() < forward_sel.len() + backward_sel.len() {
                 return false;
             }
 
+            // Match forward segments from the start
             for (segment, element) in forward_sel.iter().zip(path.iter()) {
                 if !self.segment_is_match(segment, element) {
                     return false;
                 }
             }
 
+            // Match backward segments from the end
             for (segment, element) in backward_sel.iter().rev().zip(path.iter().rev()) {
                 if !self.segment_is_match(segment, element) {
                     return false;
@@ -467,68 +471,70 @@ impl<'a> Selector<'a> {
 
     fn redact_impl(
         &self,
-        value: Content,
+        mut value: Content,
         redaction: &Redaction,
         path: &mut Vec<PathItem>,
     ) -> Content {
+        // Apply redaction if the current path matches
         if self.is_match(path) {
-            redaction.redact(value, path)
-        } else {
-            match value {
-                Content::Map(map) => Content::Map(
-                    map.into_iter()
-                        .map(|(key, value)| {
-                            path.push(PathItem::Field("$key"));
-                            let new_key = self.redact_impl(key.clone(), redaction, path);
-                            path.pop();
+            value = redaction.redact(value, path);
+        }
 
-                            path.push(PathItem::Content(key));
-                            let new_value = self.redact_impl(value, redaction, path);
-                            path.pop();
+        // Always recurse into complex structures to apply redactions to nested values
+        match value {
+            Content::Map(map) => Content::Map(
+                map.into_iter()
+                    .map(|(key, value)| {
+                        path.push(PathItem::Field("$key"));
+                        let new_key = self.redact_impl(key.clone(), redaction, path);
+                        path.pop();
 
-                            (new_key, new_value)
-                        })
-                        .collect(),
-                ),
-                Content::Seq(seq) => Content::Seq(self.redact_seq(seq, redaction, path)),
-                Content::Tuple(seq) => Content::Tuple(self.redact_seq(seq, redaction, path)),
-                Content::TupleStruct(name, seq) => {
-                    Content::TupleStruct(name, self.redact_seq(seq, redaction, path))
-                }
-                Content::TupleVariant(name, variant_index, variant, seq) => Content::TupleVariant(
+                        path.push(PathItem::Content(key));
+                        let new_value = self.redact_impl(value, redaction, path);
+                        path.pop();
+
+                        (new_key, new_value)
+                    })
+                    .collect(),
+            ),
+            Content::Seq(seq) => Content::Seq(self.redact_seq(seq, redaction, path)),
+            Content::Tuple(seq) => Content::Tuple(self.redact_seq(seq, redaction, path)),
+            Content::TupleStruct(name, seq) => {
+                Content::TupleStruct(name, self.redact_seq(seq, redaction, path))
+            }
+            Content::TupleVariant(name, variant_index, variant, seq) => Content::TupleVariant(
+                name,
+                variant_index,
+                variant,
+                self.redact_seq(seq, redaction, path),
+            ),
+            Content::Struct(name, seq) => {
+                Content::Struct(name, self.redact_struct(seq, redaction, path))
+            }
+            Content::StructVariant(name, variant_index, variant, seq) => {
+                Content::StructVariant(
                     name,
                     variant_index,
                     variant,
-                    self.redact_seq(seq, redaction, path),
-                ),
-                Content::Struct(name, seq) => {
-                    Content::Struct(name, self.redact_struct(seq, redaction, path))
-                }
-                Content::StructVariant(name, variant_index, variant, seq) => {
-                    Content::StructVariant(
-                        name,
-                        variant_index,
-                        variant,
-                        self.redact_struct(seq, redaction, path),
-                    )
-                }
-                Content::NewtypeStruct(name, inner) => Content::NewtypeStruct(
-                    name,
-                    Box::new(self.redact_impl(*inner, redaction, path)),
-                ),
-                Content::NewtypeVariant(name, index, variant_name, inner) => {
-                    Content::NewtypeVariant(
-                        name,
-                        index,
-                        variant_name,
-                        Box::new(self.redact_impl(*inner, redaction, path)),
-                    )
-                }
-                Content::Some(contents) => {
-                    Content::Some(Box::new(self.redact_impl(*contents, redaction, path)))
-                }
-                other => other,
+                    self.redact_struct(seq, redaction, path),
+                )
             }
+            Content::NewtypeStruct(name, inner) => Content::NewtypeStruct(
+                name,
+                Box::new(self.redact_impl(*inner, redaction, path)),
+            ),
+            Content::NewtypeVariant(name, index, variant_name, inner) => {
+                Content::NewtypeVariant(
+                    name,
+                    index,
+                    variant_name,
+                    Box::new(self.redact_impl(*inner, redaction, path)),
+                )
+            }
+            Content::Some(contents) => {
+                Content::Some(Box::new(self.redact_impl(*contents, redaction, path)))
+            }
+            other => other,
         }
     }
 }

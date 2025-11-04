@@ -1,0 +1,14 @@
+---
+source: insta/tests/test_redaction.rs
+expression: data
+---
+data: 1.557
+nodes:
+  - data: -2.185
+    nodes:
+      - data: 1.158
+        nodes:
+          - data: -3.381
+            nodes: []
+  - data: -0.143
+    nodes: []
