@@ -544,6 +544,71 @@ fn test_rounded_redaction() {
     );
 }
 
+#[cfg(feature = "json")]
+#[test]
+fn test_deep_wildcard_nested_objects() {
+    #[derive(Debug, Serialize)]
+    pub struct NestedData {
+        metadata: NestedMetadata,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct NestedMetadata {
+        id: f64,
+        info: NestedInfo,
+        tags: Vec<Tag>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct NestedInfo {
+        id: f64,
+        details: NestedDetails,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct NestedDetails {
+        id: f64,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct Tag {
+        id: f64,
+        details: NestedDetails,
+    }
+
+    assert_json_snapshot!(
+        "deep_wildcard_nested",
+        &NestedData {
+            metadata: NestedMetadata {
+                id: 123.456789,
+                info: NestedInfo {
+                    id: 123.456789,
+                    details: NestedDetails {
+                        id: 123.456789,
+                    },
+                },
+                tags: vec![
+                    Tag {
+                        id: 123.456789,
+                        details: NestedDetails {
+                            id: 123.456789,
+                        }
+                    },
+                    Tag {
+                        id: 123.456789,
+                        details: NestedDetails {
+                            id: 123.456789,
+                        }
+                    },
+                ],
+            },
+        },
+        {
+            ".metadata.**.id" => insta::rounded_redaction(1),
+        }
+    );
+}
+
 #[cfg(feature = "yaml")]
 #[test]
 fn test_named_redacted_with_debug_expr() {

@@ -1,0 +1,29 @@
+---
+source: insta/tests/test_redaction.rs
+expression: "&NestedData\n{\n    metadata: NestedMetadata\n    {\n        id: 123.456789, info: NestedInfo\n        { id: 123.456789, details: NestedDetails { id: 123.456789, }, }, tags:\n        vec![Tag\n        { id: 123.456789, details: NestedDetails { id: 123.456789, } }, Tag\n        { id: 123.456789, details: NestedDetails { id: 123.456789, } },],\n    },\n}"
+---
+{
+  "metadata": {
+    "id": 123.5,
+    "info": {
+      "id": 123.5,
+      "details": {
+        "id": 123.5
+      }
+    },
+    "tags": [
+      {
+        "id": 123.5,
+        "details": {
+          "id": 123.5
+        }
+      },
+      {
+        "id": 123.5,
+        "details": {
+          "id": 123.5
+        }
+      }
+    ]
+  }
+}
